@@ -1,5 +1,6 @@
-import os.path as osp
 import json
+import os.path as osp
+from pprint import pprint as pp
 
 import click as clk
 
@@ -26,21 +27,20 @@ def add(taskname, deadline, description):
     if not osp.isfile(TODO_FN):
         #create json file that's an empty list
        with open(TODO_FN, 'w') as f:
-           json.dump([], f)
+           json.dump({}, f)
            print("No TODO list found. Making new TODO list")
 
     with open(TODO_FN, 'r') as f:
-        task_list = json.load(f)
-        new_task = {'taskname': taskname, 'deadline': deadline, 'description': description}
-        task_list.append(new_task)
-        task_list = sorted(task_list, key=lambda x: x['deadline'])
+        task_dict = json.load(f)
+        new_task = {'deadline': deadline, 'description': description}
+        task_dict[taskname] = new_task
     with open(TODO_FN, 'w') as f:
-        json.dump(task_list, f)
+        json.dump(task_dict, f)
 
 @clk.command()
 def print_tasks():
     with open(TODO_FN, 'r') as f:
-        print(json.load(f))
+        pp(json.load(f))
 
 @clk.command()
 def remove(task):
