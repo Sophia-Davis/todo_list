@@ -32,7 +32,6 @@ def add(taskname, deadline, description):
         with open(TODO_FN, 'w') as f:
             json.dump({}, f)
             print("No TODO list found. Making new TODO list")
-
     with open(TODO_FN, 'r') as f:
         task_dict = json.load(f)
         new_task = {'deadline': deadline, 'description': description}
@@ -68,7 +67,7 @@ def remove(query):
         to_delete = input('Type the numbers of the tasks you want deleted:')
         try:
             nums = [int(x) for x in to_delete.split(' ')]
-#TODO= make criteria more forgiving allow separation by , or ", "
+# TODO= make criteria more forgiving allow separation by , or ", "
         except Exception:
             print('Error: invalid input.')
             return
