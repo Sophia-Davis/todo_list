@@ -1,8 +1,13 @@
+from datetime import datetime as dtt
 import json
 import os.path as osp
 from pprint import pprint as pp
+import datetime
+import time
+import traceback as trc
 
 import click as clk
+from dateparser import parse
 
 # DISPLAY; ADD ITEMS; DELETE ITEMS
 
@@ -34,8 +39,16 @@ def add(taskname, deadline, description):
             print("No TODO list found. Making new TODO list")
     with open(TODO_FN, 'r') as f:
         task_dict = json.load(f)
-        new_task = {'deadline': deadline, 'description': description}
-        task_dict[taskname] = new_task
+    try:
+        format_date = parse(deadline, settings={
+                            'PREFER_DAY_OF_MONTH': 'first'}).timestamp()
+        print(dtt.fromtimestamp(format_date).strftime('%Y-%m-%d %H-%M-%s'))
+    except Exception:
+        trc.print_exc()
+        print('Unable to decipher input.')
+        return
+    new_task = {'deadline': format_date, 'description': description}
+    task_dict[taskname] = new_task
     with open(TODO_FN, 'w') as f:
         json.dump(task_dict, f)
 
