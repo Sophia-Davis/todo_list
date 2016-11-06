@@ -1,3 +1,4 @@
+#! /usr/bin/python
 from datetime import datetime as dtt
 import json
 import os.path as osp
@@ -8,6 +9,7 @@ import traceback as trc
 
 import click as clk
 from dateparser import parse
+import marshmallow as mmw
 
 # DISPLAY; ADD ITEMS; DELETE ITEMS
 
@@ -16,8 +18,10 @@ TODO_FN = osp.join(osp.expanduser('~'), '.config/to_do.json')
 
 class Task:
 
-    def __init__(self, taskname, deadline, description):
+    def __init__(self, taskname='task', t_created=None,
+                 deadline=None, description=''):
         self.taskname = taskname
+        self.t_created = t_created
         self.deadline = deadline
         self.description = description
 
@@ -27,30 +31,72 @@ class Task:
                 'description': self.description}
 
 
+class TaskSchema(mmw.Schema):
+    taskname = mmw.fields.Str()
+    t_created = mmw.fields.DateTime()
+    deadline = mmw.fields.DateTime()
+    description = mmw.fields.Str()
+
+    @mmw.post_load
+    def make_task(self, data):
+        # data is a dictionary that contains all parameters
+        return Task(**data)
+
+
+def load_tasks():
+    '''
+    return dictionary of task objects keyed by their names
+    '''
+    with open(TODO_FN, 'r') as f:
+        raw_dict = json.load(f)
+    schema = TaskSchema()
+    return {k: schema.load(v).data for k, v in raw_dict.items()}
+
+
+def save_tasks(task_dict):
+    '''
+    saves the dictionary of task objects
+    '''
+    with open(TODO_FN, 'w') as f:
+        schema = TaskSchema()
+        raw_dict = {k: schema.dump(v).data for k, v in task_dict.items()}
+        json.dump(raw_dict, f)
+
+
 @clk.command()
-@clk.argument('taskname', nargs=1)
-@clk.argument('deadline', nargs=1)
-@clk.argument('description', nargs=1)
-def add(taskname, deadline, description):
+@clk.argument('task', nargs=-1)
+@clk.option('--deadline', '-d')
+@clk.option('--desc', '-s')
+def add(task, deadline=None, desc=''):
+    taskname = ' '.join(task)
     if not osp.isfile(TODO_FN):
         # create json file that's an empty list
         with open(TODO_FN, 'w') as f:
             json.dump({}, f)
             print("No TODO list found. Making new TODO list")
-    with open(TODO_FN, 'r') as f:
-        task_dict = json.load(f)
-    try:
-        format_date = parse(deadline, settings={
-                            'PREFER_DAY_OF_MONTH': 'first'}).timestamp()
-        print(dtt.fromtimestamp(format_date).strftime('%Y-%m-%d %H-%M-%s'))
-    except Exception:
-        trc.print_exc()
-        print('Unable to decipher input.')
-        return
-    new_task = {'deadline': format_date, 'description': description}
+
+    task_dict = load_tasks()
+    if deadline is not None:
+        try:
+            format_date = parse(deadline, settings={
+                'PREFER_DAY_OF_MONTH': 'first',
+                'PREFER_DATES_FROM': 'future',
+                'RETURN_AS_TIMEZONE_AWARE': True})
+        except Exception:
+            trc.print_exc()
+            print('Unable to decipher input. Try another format.')
+            return
+    else:
+        format_date = None
+
+    new_task = Task(taskname, dtt.now(),
+                    deadline=format_date,
+                    description=desc)
+
     task_dict[taskname] = new_task
-    with open(TODO_FN, 'w') as f:
-        json.dump(task_dict, f)
+    save_tasks(task_dict)
+
+# read and write from todo list
 
 
 @clk.command()
@@ -72,7 +118,7 @@ def remove(query):
         print('No matches. No tasks deleted.')
     elif len(matches) == 1:
         del task_dict[matches[0]]
-        print('Deleted task', matches[0])
+        print('Deleted task:', matches[0])
     else:
         print('Multiple matches found.')
         for a, b in enumerate(matches):
@@ -82,7 +128,7 @@ def remove(query):
             nums = [int(x) for x in to_delete.split(' ')]
 # TODO= make criteria more forgiving allow separation by , or ", "
         except Exception:
-            print('Error: invalid input.')
+            print('Input Error : invalid input.')
             return
         for x in nums:
             del task_dict[matches[x]]
