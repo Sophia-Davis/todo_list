@@ -20,14 +20,9 @@ class Task:
     line_format = '{0: <20s} {1: <20s}{2: <60s}'
     date_format = '%Y-%m-%d %H:%M:%S'
 
-    def __init__(self, taskname=None, t_created=None,
-                 deadline=None, description='',
+    def __init__(self, taskname, t_created, deadline=None, description='',
                  children=None, parents=None):
 
-        if taskname is None:
-            raise ValueError('need to provide a task name!')
-        if t_created is None:
-            raise ValueError('need to provide a creation date!')
         self.taskname = taskname
         self.t_created = t_created
         self.deadline = deadline
@@ -80,7 +75,7 @@ class TaskSchema(mmw.Schema):
     @mmw.post_load
     def make_task(self, data):
         # data is a dictionary that contains all parameters
-        return Task(**data)
+        return Task(data.pop('taskname'), data.pop('t_created'), **data)
 
 
 def load_tasks():
