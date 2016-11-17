@@ -1,15 +1,13 @@
 import string
-import time
 
 import numpy as np
 import numpy.random as npr
-import pytest
 
-from udo.udo_shell import UDO_TOKS, UDoParser
+from udo.udo_shell import UDoShell
 
 
 def test_udo_parser_endurance():
-    up = UDoParser()
+    up = UDoShell()
     seqs = [[' '], list(string.ascii_letters), list(string.printable)]
     for i in range(5000):
         l = 50 + int(100 * npr.random())
@@ -21,9 +19,7 @@ def test_udo_parser_endurance():
 
 
 def test_udo_parser_basic():
-    up = UDoParser()
-
-    assert not up.parse('')
+    up = UDoShell()
 
     out = up.parse('test task')
     print(out)
