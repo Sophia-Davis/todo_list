@@ -22,6 +22,7 @@ class IntegerSetType(clk.ParamType):
 T_INT_SET = IntegerSetType()
 
 
+@total_ordering
 class Task:
 
     def __init__(self, *, taskname, t_created, description='',
@@ -40,13 +41,21 @@ class Task:
         self.children = set([] if children is None else children)
         self.parents = set([] if parents is None else parents)
 
-    @total_ordering
+        self._completed = False
+
     def __lt__(self, other):
         try:
             return min(self.deadlines) > min(other.deadlines)
         # TypeError will be raised if either deadline is None
         except TypeError:
             return self.t_created < other.t_created
+
+    @property
+    def completed(self):
+        return self._completed
+
+    def complete(self):
+        self._completed = True
 
 
 class TaskDict:
@@ -190,5 +199,3 @@ class TaskSchema(mmw.Schema):
     def make_task(self, data):
         # data is a dictionary that contains all parameters
         return Task(**data)
-    
-

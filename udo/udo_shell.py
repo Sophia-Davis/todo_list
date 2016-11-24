@@ -4,7 +4,7 @@ from datetime import datetime as dtt
 import click as clk
 from dateparser import parse
 
-from .model import Task
+from .udo_model import Task
 from .udo_util import enumerated_prompt
 
 
