@@ -1,5 +1,6 @@
 from functools import total_ordering
 import json
+import os
 import os.path as osp
 import re
 import traceback as trc
@@ -21,9 +22,15 @@ class IntegerSetType(clk.ParamType):
 
 T_INT_SET = IntegerSetType()
 
+# TODO: make configurable
+DUE_DATE_FORMAT = '%a, %b %m, %H:%M'
+
 
 @total_ordering
 class Task:
+
+    # name due desc tags
+    short_format = '{: <25s}  {: <25s}  {: <40s}  {: >20s}'
 
     def __init__(self, *, taskname, t_created, description='',
                  deadlines=None, recur_seconds=None,
@@ -47,7 +54,7 @@ class Task:
         try:
             return min(self.deadlines) > min(other.deadlines)
         # TypeError will be raised if either deadline is None
-        except TypeError:
+        except (ValueError, TypeError):
             return self.t_created < other.t_created
 
     @property
@@ -57,15 +64,22 @@ class Task:
     def complete(self):
         self._completed = True
 
+    def format_short(self):
+        due_str = ('' if not self.deadlines
+                   else '@ ' + self.deadlines[0].strftime(DUE_DATE_FORMAT))
+        tag_str = ('#' if self.tags else '') + ' #'.join(self.tags)
+        desc_str = self.description or ''
+
+        return Task.short_format.format(
+            self.taskname, due_str, desc_str, tag_str
+        )
+
 
 class TaskDict:
     todo_dir_json = osp.join(osp.expanduser('~'), '.config/udo_task/')
     todo_fn_json = osp.join(todo_dir_json, 'tasks.json')
 
     storage_formats = ['json']
-
-    line_format = '{0: <50s} {1: <20s}{2: <60s}'
-    date_format = '%Y-%m-%d %H:%M:%S'
 
     def __init__(self, storage='json'):
         self._d = {}
@@ -77,6 +91,7 @@ class TaskDict:
         self.setup()
 
     def _setup_json(self):
+        os.makedirs(TaskDict.todo_dir_json, exist_ok=True)
         if not osp.isfile(TaskDict.todo_fn_json):
             # create json file that's an empty list
             with open(TaskDict.todo_fn_json, 'w') as f:
@@ -124,33 +139,17 @@ class TaskDict:
         if self.storage == 'json':
             self._save_json()
 
-    def print_lines(self, depth=0, **kwargs):
+    def list_tasks(self, filt=None, depth=0, **kwargs):
         '''
         Formats the task's contents in a human-readable format, recursing to
         child tasks. Needs task_dict to be able to access children
         '''
         # FIXME: work in progress
-        for task in sorted([t for t in self._d.values() if not t.children]):
-            out = TaskDict.line_format.format(
-                task.taskname,
-                # FIXME: doesn't use deadlines list
-                ('[due ' + task.deadlines.strftime(Task.date_format) + ']'
-                    if task.deadlines is not None else ''),
-                (' - ' + task.description
-                    if task.description is not None else '')
-            )
-            # FIXME FIXME FIXME FOR THE LOVE OF GOD FIXME
-            # if task.children:
-            #     out += '\n'
-            # out += '\n'.join([task_dict[c].print_lines(task_dict,
-            #                                            echo=False,
-            #                                            depth=depth+1)
-            #                   for c in task.children])
-            # out = '\t' * (depth + 1) + out
-            # if echo:
-            clk.echo(out, **kwargs)
-            # else:
-            #     return out
+        # FIXME: implement filter
+        out = []
+        for task in sorted([t for t in self._d.values() if not t.parents]):
+            out.append(task.format_short())
+        clk.echo('\n'.join(out), **kwargs)
 
     def add_task(self, task):
         # enforce strict correctness of parent and child lists
@@ -186,7 +185,7 @@ class TaskSchema(mmw.Schema):
     importance = mmw.fields.Int(default=0)
 
     t_created = mmw.fields.DateTime(required=True)
-    deadline = mmw.fields.List(mmw.fields.DateTime(allow_none=True))
+    deadlines = mmw.fields.List(mmw.fields.DateTime(), allow_none=True)
     recur_seconds = mmw.fields.List(mmw.fields.Int())
 
     parents = mmw.fields.List(mmw.fields.Str())

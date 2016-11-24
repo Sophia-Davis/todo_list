@@ -6,12 +6,12 @@ import os.path as osp
 import click as clk
 
 from udo.udo_shell import UDoShell
-from udo.model import TaskDict
+from udo.udo_model import TaskDict
 # DISPLAY; ADD ITEMS; DELETE ITEMS
 # TODO: allow date display format configuration
 
 
-def shell(shell='add', parse_now=None):
+def shell(shell=UDoShell.com_add, parse_now=None):
     # TODO: storage methods, etc, through config
     task_dict = TaskDict().load()
     u = UDoShell(task_dict, start_shell=shell)
@@ -24,12 +24,12 @@ def shell(shell='add', parse_now=None):
 @clk.command()
 def add():
     # TODO: parse arguments, define syntax, add to help
-    shell(shell='add')
+    shell(shell=UDoShell.com_add)
 
 
 @clk.command('del')
 def delete():
-    shell(shell='del')
+    shell(shell=UDoShell.com_del)
 
 
 @clk.command('list')
@@ -39,9 +39,11 @@ def task_list(sort=None):
     task_dict.print_lines(sort)
 
 
-@clk.group()
-def main():
-    pass
+@clk.group(invoke_without_command=True)
+@clk.pass_context
+def main(ctx):
+    if ctx.invoked_subcommand is None:
+        add()
 
 
 main.add_command(add)

@@ -1,6 +1,6 @@
 import click as clk
 
-from .model import T_INT_SET
+from .udo_model import T_INT_SET
 
 
 def enumerated_prompt(items, head_question, select_question, prefix=''):
