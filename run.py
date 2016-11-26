@@ -1,8 +1,4 @@
 #! /usr/bin/python
-from datetime import datetime as dtt
-import json
-import os
-import os.path as osp
 import click as clk
 
 from udo.udo_shell import UDoShell

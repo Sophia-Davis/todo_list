@@ -2,53 +2,98 @@ from functools import total_ordering
 import json
 import os
 import os.path as osp
-import re
-import traceback as trc
+from typing import List
 
 import click as clk
 import marshmallow as mmw
 
+from .udo_util import aware_now, enumerated_prompt
 
-class IntegerSetType(clk.ParamType):
-    name = 'set of integers'
-    regex = re.compile(r'[0-9]+')
-
-    def convert(self, value, param, ctx):
-        try:
-            return set([int(x) for x in IntegerSetType.regex.findall(value)])
-        except Exception:
-            self.fail(trc.format_exc(), param, ctx)
-
-
-T_INT_SET = IntegerSetType()
 
 # TODO: make configurable
-DUE_DATE_FORMAT = '%a, %b %m, %H:%M'
+DUE_DATE_FORMAT = '%a, %b %d, %H:%M'
+
+
+class TaskSchema(mmw.Schema):
+
+    @classmethod
+    def get_fields(cls):
+        return cls().fields
+
+    class Meta:
+        strict = True
+
+    taskname = mmw.fields.Str(required=True, sh_is_default=True)
+    t_created = mmw.fields.DateTime(required=True, sh_init=aware_now)
+
+    importance = mmw.fields.Int(default=0, sh_sym='!', sh_count=True)
+
+    deadlines = mmw.fields.List(mmw.fields.DateTime(), sh_sym='@')
+    recur_seconds = mmw.fields.List(mmw.fields.Int(), sh_sym='%')
+
+    parents = mmw.fields.List(mmw.fields.Str(), sh_sym='^')
+    children = mmw.fields.List(mmw.fields.Str(), sh_ignore=True)
+
+    description = mmw.fields.Str(default='', sh_sym='=')
+    tags = mmw.fields.List(mmw.fields.Str(), sh_sym='#')
+
+    completed = mmw.fields.Bool(default=False, sh_ignore=True)
+
+    @mmw.post_load
+    def make_task(self, data):
+        return Task(**data)
+
+    @mmw.validates_schema
+    def validate(self, task) -> None:
+        for key in task.keys():
+            if key not in self.fields.keys():
+                raise mmw.ValidationError('invalid key {}')
+
+        task_dict = self.context.get('task_dict', False)
+        if not task_dict:
+            return
+
+        name = task['taskname']
+        pair = ('parents', 'children')
+        for u, v in [pair] + [pair[::-1]]:
+            for t_u in task[u]:
+                if t_u not in task_dict:
+                    raise mmw.ValidationError(
+                        'task "{}" has unknown {} "{}"'
+                        .format(name, u[:-1], t_u)
+                    )
+                elif t_u not in getattr(task_dict[t_u], v):
+                    raise mmw.ValidationError(
+                        'task "{}"\'s {} "{}" severed'
+                        .format(name, u[:-1], t_u)
+                    )
 
 
 @total_ordering
 class Task:
 
-    # name due desc tags
-    short_format = '{: <25s}  {: <25s}  {: <40s}  {: >20s}'
+    # importance name due desc tags
+    short_format = '{: >3s} {: <25s}  {: <25s}  {: >20s}'
 
-    def __init__(self, *, taskname, t_created, description='',
-                 deadlines=None, recur_seconds=None,
-                 children=None, parents=None, tags=None,
-                 importance=0):
+    def __init__(self, *, taskname, t_created=None,
+                 importance=0, deadlines=None, recur_seconds=None,
+                 parents=None, children=None, description='', tags=None,
+                 completed=False):
 
         self.taskname = taskname
-        self.t_created = t_created
-        self.deadlines = deadlines
-        self.recur_seconds = recur_seconds
-        self.description = description
+        self.t_created = t_created or aware_now()
+
         self.importance = importance
-        self.tags = tags
+        self.deadlines = deadlines or set()
+        self.recur_seconds = recur_seconds or set()
 
-        self.children = set([] if children is None else children)
-        self.parents = set([] if parents is None else parents)
+        self.parents = parents or set()
+        self.children = children or set()
+        self.tags = tags or set()
 
-        self._completed = False
+        self.description = description
+
+        self.completed = completed
 
     def __lt__(self, other):
         try:
@@ -57,21 +102,17 @@ class Task:
         except (ValueError, TypeError):
             return self.t_created < other.t_created
 
-    @property
-    def completed(self):
-        return self._completed
-
-    def complete(self):
-        self._completed = True
-
     def format_short(self):
+        imp_color = {0: 'white', 1: 'yellow',
+                     2: 'organge', 3: 'red'}[self.importance]
+        imp_str = clk.style('!' * min(3, self.importance), fg=imp_color)
+
         due_str = ('' if not self.deadlines
                    else '@ ' + self.deadlines[0].strftime(DUE_DATE_FORMAT))
         tag_str = ('#' if self.tags else '') + ' #'.join(self.tags)
-        desc_str = self.description or ''
 
         return Task.short_format.format(
-            self.taskname, due_str, desc_str, tag_str
+            imp_str, self.taskname, due_str, tag_str
         )
 
 
@@ -114,6 +155,7 @@ class TaskDict:
                 f.seek(0)
                 if not f.read():
                     self._d = {}
+                    return
                 else:
                     # otherwise, ... problem! raise!
                     raise
@@ -170,31 +212,33 @@ class TaskDict:
     def del_task(self, tn):
         del self._d[tn]
 
-    def match_tasks(self, query):
+    def match_tasks(self, query_dict):
         # TODO: make more sophisticated
-        # TODO: match on more than name, i.e. dict queries
         '''
         Returns a set of keys in task_dict which match the query.
         '''
-        matches = set([tn for tn in self._d.keys() if query in tn])
-        return matches
+        # FIXME: match on more than name, i.e. dict queries
+        query = query_dict['taskname']
+        return sorted([tn for tn in self._d.keys() if query in tn])
 
+    def reconcile_relative(self, name: str, relative='parent') -> List[str]:
+        par_matches = self.match_tasks({'taskname': name})
 
-class TaskSchema(mmw.Schema):
-    taskname = mmw.fields.Str(required=True)
-    importance = mmw.fields.Int(default=0)
+        l = len(par_matches)
+        if l == 0:
+            clk.echo('No {} found matching "{}"'.format(relative, name))
+        elif l > 1:
+            ixes = enumerated_prompt(
+                par_matches,
+                'More than one of the {0} matches "{}"'.format(relative, name),
+                'Please select intended {0}.'
+            )
+            return [par_matches(ix) for ix in ixes]
+        else:
+            return par_matches
 
-    t_created = mmw.fields.DateTime(required=True)
-    deadlines = mmw.fields.List(mmw.fields.DateTime(), allow_none=True)
-    recur_seconds = mmw.fields.List(mmw.fields.Int())
+    def __contains__(self, key):
+        return key in self._d
 
-    parents = mmw.fields.List(mmw.fields.Str())
-    children = mmw.fields.List(mmw.fields.Str())
-
-    description = mmw.fields.Str(allow_none=True)
-    tags = mmw.fields.List(mmw.fields.Str())
-
-    @mmw.post_load
-    def make_task(self, data):
-        # data is a dictionary that contains all parameters
-        return Task(**data)
+    def __getitem__(self, key):
+        return self._d[key]

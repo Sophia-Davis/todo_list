@@ -1,13 +1,15 @@
-from collections import Counter
-from datetime import datetime as dtt
-from datetime import timezone
+from functools import partial
 import re
 
 import click as clk
 from dateparser import parse
+import marshmallow as mmw
 
-from .udo_model import Task
-from .udo_util import enumerated_prompt
+from .udo_model import Task, TaskSchema
+from .udo_util import enumerated_prompt, parse_deadline
+
+PROMPT = partial(clk.prompt, prompt_suffix='')
+CONFIRM = partial(clk.confirm, prompt_suffix='')
 
 
 class UDoShell:
@@ -16,43 +18,84 @@ class UDoShell:
     '''
     # TODO: document shell mini-language
 
-    sym_deadlines = 'deadlines'
-    sym_tag = 'tags'
-    sym_recur = 'recur_seconds'
-    sym_parents = 'parents'
-    sym_desc = 'description'
+    com_add, com_del = 'add', 'del'
+    com_list, com_ls = 'list', 'ls'
+    com_quit, com_exit = 'quit', 'exit'
+    com_done = 'done'
+    com_mod = 'mod'
 
-    com_add = ':add'
-    com_del = ':del'
-    com_list = ':list'
-    com_quit = ':quit'
-    com_exit = ':exit'
+    field_info = TaskSchema.get_fields()
+    sh_syms = {
+        f.metadata['sh_sym']: name for name, f in field_info.items()
+        if 'sh_sym' in f.metadata
+    }
 
-    tok_sym_tab = {'!': None,
-              '@': sym_deadlines,
-              '#': sym_tag,
-              '%': sym_recur,
-              '^': sym_parents,
-              '=': sym_desc}
-
-    @staticmethod
-    def udo_parse(s: str):
+    def sh_parse(self, s):  # noqa
         '''
         Reads a stream of udo tokens into a dictionary.
         '''
-        # FIXME 
-        pass
+
+        out = {}
+        state = None
+        for k, f in UDoShell.field_info.items():
+            if 'sh_count' in f.metadata:
+                out[k] = s.count(f.metadata['sh_sym'])
+                s = re.sub(f.metadata['sh_sym'], '', s)
+                continue
+            if 'sh_is_default' in f.metadata:
+                assert state is None
+                state = k
+            if 'sh_init' in f.metadata:
+                out[k] = f.metadata['sh_init']()
+            elif 'sh_sym' in f.metadata:
+                out[k] = []
+
+        assert state is not None
+
+        out[state].append('')
+        for c in s:
+            if c in UDoShell.sh_syms.keys():
+                state = UDoShell.sh_syms[c]
+                out[state].append('')
+            else:
+                out[state][-1] = out[state][-1] + c
+
+        for k, f in UDoShell.field_info.items():
+            if 'sh_init' in f.metadata or 'sh_count' in f.metadata:
+                continue
+            # TODO: better way of handling "reentrant options"
+            elif not isinstance(f, mmw.fields.List) and out[k]:
+                if out[k][1:]:
+                    clk.echo('Multiple entries for "{}", taking the first'
+                             .format(k))
+                out[k] = out[k][0]
+
+        for relation in ['parents', 'children']:
+            new = []
+            for name in out[relation]:
+                new += self.task_dict.reconcile_relative(name,
+                                                         relative=relation)
+            out[relation] = new
+
+        new = []
+        for deadline in out['deadlines']:
+            new.append(parse_deadline(deadline))
+        out['deadlines'] = new
+        
+        print(out)
+        return out
 
     def __init__(self, task_dict, start_shell=com_add):
         self.task_dict = task_dict
         self.dispatch = {UDoShell.com_add: self._parse_add,
-                         UDoShell.com_del: self._parse_del,
-                         UDoShell.com_list: self._parse_list}
+                         UDoShell.com_del: self._parse_del}
 
-        self.prompts = {UDoShell.com_add: clk.style('uDo ADD ', fg='green'),
-                        UDoShell.com_del: clk.style('uDo DEL ', fg='red')}
+        self.prompts = {UDoShell.com_add: clk.style('uDo ADD > ', fg='green'),
+                        UDoShell.com_del: clk.style('uDo DEL > ', fg='red')}
 
         self._cur_shell = start_shell
+        self._task_schema = TaskSchema()
+        self._task_schema.context['task_dict'] = task_dict
 
     def parse_fail(self, msg, repeat=True):
         clk.echo(msg, color='red')
@@ -60,105 +103,43 @@ class UDoShell:
             self.read_task()
 
     # TODO: del by other than name
-    def _parse_del(self, s):
-        matches = sorted(self.task_dict.match_tasks(s))
-        if len(matches) == 0:
-            print('No matches. No tasks deleted.')
-        elif len(matches) == 1:
+    def _parse_del(self, s: str):
+        out = self.sh_parse(s)
+
+        matches = self.task_dict.match_tasks(out)
+        l = len(matches)
+
+        if l == 0:
+            clk.echo('No matches. No tasks deleted.')
+        elif l == 1:
             self.task_dict.del_task(matches[0])
-            print('Deleted task:', matches[0])
+            clk.echo('Deleted task "{}"'.format(matches[0]))
         else:
             to_delete = enumerated_prompt(matches, 'Multiple matches found...',
                                           'Select numbers of tasks to delete')
             for x in to_delete:
                 self.task_dict.del_task(matches[x])
-                print('Deleted task "{}"'.format(matches[x]))
+            clk.echo('Deleted {} tasks'.format(len(to_delete)))
 
+    def _parse_add(self, s: str):
+        out = self.sh_parse(s)
 
-    def _parse_add(self, s):
-        out = {'t_created': dtt.now(timezone.utc)}
-        # ! is handled specially
-        out['importance'] = s.count('!')
-        s = re.sub('!', '', s)
+        # match parents
+        # TODO: move to TaskDict method
 
-        list_states = [UDoShell.sym_deadlines, UDoShell.sym_recur,
-                       UDoShell.sym_tag, UDoShell.sym_parents]
-        for ls in list_states:
-            out[ls] = []
+        if len(out['taskname']) < 5:
+            save = CONFIRM('You may have meant a command. Save anyway?')
+        else:
+            save = True
 
-        buffers = {}
-        seen_ss = {}
-        single_states = ['taskname', UDoShell.sym_desc]
-        for ss in single_states:
-            seen_ss[ss] = False
-            buffers[ss] = []
+        if save:
+            task = Task(**out)
+            self.task_dict.add_task(task)
 
-        warnings = set()
+    def _parse_list(self, s: str):
+        out = self.sh_parse(s)
 
-        # PARSE BLOCK
-        state = 'taskname'
-        for c in s:
-            if c in UDoShell.tok_sym_tab:
-                state = UDoShell.tok_sym_tab[c]
-                if state in list_states:
-                    out[state].append([])
-                else:
-                    if seen_ss[state]:
-                        warnings.add("More than one {} given! Using last."
-                                     .format(state))
-                        buffers[state] = []
-                    else:
-                        seen_ss[state] = True
-            else:
-                if state in list_states:
-                    out[state][-1].append(c)
-                elif state in single_states:
-                    buffers[state].append(c)
-
-        # POSTPROCESS BLOCK
-        for ls in list_states:
-            out[ls] = [''.join(chars).strip() for chars in out[ls]]
-        for ss in single_states:
-            out[ss] = ''.join(buffers[ss]).strip()
-
-        if not buffers['taskname']:
-            return self.parse_fail('Taskname cannot be empty!')
-
-        for rs in out[UDoShell.sym_recur]:
-            rs = int(rs)
-
-        new_parents = []
-        for parent in out[UDoShell.sym_parents]:
-            par_matches = match_tasks(self.task_dict, parent)
-            print(par_matches)
-            if len(par_matches) == 0:
-                warnings.add('No parents found matching "{}"'.format(parent))
-            elif len(par_matches) > 1:
-                ixes = enumerated_prompt(
-                    par_matches,
-                    'More than one parent matches "{}"'.format(parent),
-                    'Please select intended parents.'
-                )
-                new_parents += [par_matches(ix) for ix in ixes]
-            else:
-                new_parents += [par_matches.pop()]
-        out[UDoShell.sym_parents] = new_parents
-
-        new_deadlines = []
-        for dt in out[UDoShell.sym_deadlines]:
-            deadline = parse(dt, settings={
-                'PREFER_DAY_OF_MONTH': 'first',
-                'PREFER_DATES_FROM': 'future',
-                'RETURN_AS_TIMEZONE_AWARE': True}
-            )
-            new_deadlines.append(deadline)
-        out[UDoShell.sym_deadlines] = new_deadlines
-
-        task = Task(**out)
-        for warning in warnings:
-            clk.echo(message=clk.style(warning, fg='red'))
-
-        self.task_dict.add_task(task)
+        self.task_dict.list_tasks(filt=out)
 
     def read_task(self, parse_now=None):  # noqa
         # TODO: unify data model to be DRYer, less magicky
@@ -171,49 +152,35 @@ class UDoShell:
         while True:
 
             if not parse_now:
-                print('getting prompt')
-                s = clk.prompt(self.prompts[self._cur_shell], type=str)
+                s = PROMPT(self.prompts[self._cur_shell], type=str)
             else:
-                print('setting s to parse_now')
                 s = parse_now
                 parse_now = None
 
-            print('s is "{}"'.format(s))
-            print('parse now is "{}"'.format(parse_now))
             coms = s.split(' ')
             com = coms[0].lower()
 
-            if not s or com in [UDoShell.com_exit, UDoShell.com_quit] :
+            if not s or com in [UDoShell.com_exit, UDoShell.com_quit]:
                 return
 
             elif com in self.dispatch.keys():
-                print('com is dispatch')
                 self._cur_shell = com
                 if len(coms) > 1:
                     parse_now = ' '.join(coms[1:])
 
-            elif com in [':done']:
-                print('com is done')
+            elif com in [UDoShell.com_done]:
                 try:
                     complete = ' '.join(coms[1])
                     self.task_dict.complete(complete)
                 except IndexError:
                     clk.echo('No task given to complete.')
 
-            elif com == 'list':
-                print('com is list')
+            elif com in [UDoShell.com_list, UDoShell.com_ls]:
                 try:
-                    filt = ' '.join(coms[1:])
+                    filt_dict = self.sh_parse(' '.join(coms[1:]))
                 except IndexError:
-                    filt = None
-                self.task_dict.list_tasks(filt=filt)
+                    filt_dict = None
+                self.task_dict.list_tasks(filt=filt_dict)
 
             else:
-                print('com is fallthrough')
                 self.dispatch[self._cur_shell](s)
-
-
-if __name__ == '__main__':
-    u = UDoShell()
-    out = u.get_line()
-    print(out)
